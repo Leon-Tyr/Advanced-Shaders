@@ -1,0 +1,123 @@
+#version 450 core
+
+// reading in a triangle, split tesselated triangels evenly in a counter-clockwise direction (ccw)
+layout(triangles, equal_spacing, ccw) in;
+//layout (location = 0) in vec3 aPos;
+
+// forward declare functions to perfrom interpolation with the barycentric coordinates from the Primitive Generator
+vec2 interpolate2D(vec2 v0, vec2 v1, vec2 v2) ;
+vec3 interpolate3D(vec3 v0, vec3 v1, vec3 v2) ;
+vec4 interpolate4D(vec4 v0, vec4 v1, vec4 v2) ;
+float snoise(vec3 x);
+float hash(float n);
+float cycleOctaves(vec3 pos, int numOctaves) ;
+
+// unifrom matrices to perform transformations
+// previously this would have been done in vertex shader
+uniform mat4 view;
+uniform mat4 projection;
+uniform sampler2D heightMap;
+uniform int heightScale;
+uniform vec3 eyePos;
+uniform float time;
+uniform mat4 lightSpaceMatrix;
+
+// read in vector arrays from previous shader
+in vec3 posTC[] ;
+in vec2 TCSTexCoords[];
+//in vec4 FragPosLightSpaceTCS[];
+
+// pass along the interpolated values
+out vec3 posES ;
+out vec2 TESTexCoords;
+out vec3 normES;
+out float visibility;
+//out vec4 FPLightSpace;
+
+void main()
+{   
+	// interpolate the normal and xyz position using the linear interpolation function
+    // use 3D because they are in three dimensions; 2D also included for uv texture coordinates
+	TESTexCoords = interpolate2D(TCSTexCoords[0], TCSTexCoords[1], TCSTexCoords[2]);
+    posES = interpolate3D(posTC[0], posTC[1], posTC[2]) ;
+	//FPLightSpace = interpolate4D(FragPosLightSpaceTCS[0], FragPosLightSpaceTCS[1], FragPosLightSpaceTCS[2]);
+
+	float scale = 10;
+	// CDM 
+	float right = (textureOffset(heightMap, TESTexCoords, ivec2(1,0)).r)*scale;
+	float left = (textureOffset(heightMap, TESTexCoords, ivec2(-1,0)).r)*scale;
+	float up = (textureOffset(heightMap, TESTexCoords, ivec2(0,1)).r)*scale;
+	float down = (textureOffset(heightMap, TESTexCoords, ivec2(0,-1)).r)*scale; 
+	normES = normalize(vec3((left - right),2.0, (up - down)));
+
+	//algorithm for fog/colour blend
+    float DENS = 0.005;
+    float g = 1.2;
+    float distanceFromCam = distance(eyePos, posES);
+    visibility = exp(-pow((distanceFromCam*DENS), g));
+    visibility = clamp(visibility,0.0,1.0);
+
+	// set height map but currently not used
+    // float height = (texture(heightMap,TESTexCoords).x);
+
+	// set height using simplex perlin noise
+    posES.y = cycleOctaves(posES, 20);
+ 
+    gl_Position = projection * view  *vec4(posES, 1.0); 
+
+} 
+
+
+//basic linear interpolation
+vec2 interpolate2D(vec2 v0, vec2 v1, vec2 v2)
+{
+   	return vec2(gl_TessCoord.x) * v0 + vec2(gl_TessCoord.y) * v1 + vec2(gl_TessCoord.z) * v2;
+}
+
+vec3 interpolate3D(vec3 v0, vec3 v1, vec3 v2)
+{
+   	return vec3(gl_TessCoord.x) * v0 + vec3(gl_TessCoord.y) * v1 + vec3(gl_TessCoord.z) * v2;
+}
+
+vec4 interpolate4D(vec4 v0, vec4 v1, vec4 v2)
+{
+   	return vec4(gl_TessCoord.x) * v0 + vec4(gl_TessCoord.y) * v1 + vec4(gl_TessCoord.z) * v2;
+}
+
+// functions below are used for simplex perlin noise, calulcate the octaves and noise.
+float hash(float n)
+{
+	return fract(sin(n) * 753.5453123 * time);
+}
+
+float snoise(vec3 x)
+{
+	vec3 p = floor(x);
+	vec3 f = fract(x);
+
+	float n = p.x +p.y * 157.0f + 113.0f * p.z;
+	return mix(mix(hash(n + 0.0f), hash(n + 1.0f), f.x),
+			mix(mix(hash(n + 113.0f), hash(n + 114.0f), f.x),
+				mix(hash(n+270.0f), hash(n+271.0f), f.x), f.y), f.z);
+}
+
+float cycleOctaves(vec3 pos, int numOctaves) 
+{
+	float total = 0.0f;
+	float maxAmp = 0.0f;
+	float amp = 100.0f;
+	float frequency = 0.005f;
+
+	for (int i = 0; i < numOctaves; i++)
+	{
+		float x = pos.x * frequency;
+		//float y = pos.y * frequency;
+		float y = pos.y;
+		float z = pos.z * frequency;
+		total += snoise(vec3(x, y, z)) * amp;
+		maxAmp += amp;
+		frequency *= 2;
+		amp /= 2;
+	}
+	return (total / maxAmp) * 150;
+}
